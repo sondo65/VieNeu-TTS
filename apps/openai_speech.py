@@ -21,7 +21,9 @@ generated — the first bytes leave ~115 ms after the request on an RTX 3060,
 Request body (OpenAI fields + a few extras, all optional but ``input``):
     model            any string; reported back as-is
     input            text, chunked internally at ``max_chars`` (256)
-    voice            preset name (GET /v1/voices) or one added with POST /v1/voices
+    voice            preset name (GET /v1/voices), a voice saved from the Gradio
+                     Voice Cloning tab (~/.vieneu/user_voices_v3_turbo.json, loaded
+                     at startup) or one added with POST /v1/voices
     response_format  "pcm" (s16le, no header) | "wav" (header with unknown length,
                      plays as it streams). mp3/opus/aac/flac → 400.
     stream_format    "audio" (default: raw chunked body) | "sse" (Server-Sent
@@ -73,10 +75,12 @@ import numpy as np
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from vieneu import Vieneu
+from apps.user_voices import load_user_voices, user_voices_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("vieneu.api")
@@ -108,6 +112,9 @@ class Engine:
         log.info("⏳ loading VieNeu-TTS v3 Turbo (backend=%s device=%s)", backend, device)
         t = time.perf_counter()
         self.tts = Vieneu(mode="v3turbo", **kw)
+        user = load_user_voices(self.tts)
+        if user:
+            log.info("🎙️ loaded %d saved voice(s) from %s: %s", len(user), user_voices_path(self.tts), ", ".join(user))
         self.backend = self.tts.backend
         # The voices and aliases that exist before any client enrolls one;
         # POST /v1/voices may not replace them.
@@ -211,6 +218,14 @@ def _error(status: int, message: str, code: Optional[str] = None, headers=None) 
 
 
 app = FastAPI(title="VieNeu-TTS speech API", version="1.0")
+# AIRI stage-web (and other browser UIs) call this API from another origin.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(HTTPException)
